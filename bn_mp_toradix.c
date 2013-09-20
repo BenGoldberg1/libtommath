@@ -16,12 +16,56 @@
  */
 
 /* stores a bignum as a ASCII string in a given radix (2..64) */
-int mp_toradix (mp_int * a, char *str, int radix)
+static int mp_toradix_naive(mp_int * a, char *str, int radix)
 {
   int     res, digs;
   mp_int  t;
   mp_digit d;
   char   *_s = str;
+
+  /* Since this is now internal, */
+  /* don't check bounds for radix, nor for a being zero */
+  if ((res = mp_init_copy (&t, a)) != MP_OKAY) {
+    return res;
+  }
+
+  /* if it is negative output a - */
+  if (t.sign == MP_NEG) {
+    ++_s;
+    *str++ = '-';
+    t.sign = MP_ZPOS;
+  }
+
+  digs = 0;
+  do {
+    if ((res = mp_div_d (&t, (mp_digit) radix, &t, &d)) != MP_OKAY) {
+      mp_clear (&t);
+      return res;
+    }
+    *str++ = mp_s_rmap[d];
+    ++digs;
+  } while (mp_iszero (&t) == 0);
+
+  /* reverse the digits of the string.  In this case _s points
+   * to the first digit [exluding the sign] of the number]
+   */
+  bn_reverse ((unsigned char *)_s, digs);
+
+  /* append a NULL so the string is properly terminated */
+  *str = '\0';
+
+  mp_clear (&t);
+  return MP_OKAY;
+}
+
+int mp_toradix (mp_int * a, char *str, int radix)
+{
+  int     res, digits_at_a_time;
+  mp_int  t;
+  mp_digit d, divide_by;
+  char   *_s = str;
+  static int pow_of_radix[64] = {0};
+  static mp_digit radix_to_pow[64];
 
   /* check range of the radix */
   if (radix < 2 || radix > 64) {
@@ -35,6 +79,25 @@ int mp_toradix (mp_int * a, char *str, int radix)
      return MP_OKAY;
   }
 
+  /* Find the largest power of radix which doesn't exceed MP_DIGIT_MAX */
+  if( pow_of_radix[radix-1] ) {
+    digits = pow_of_radix[radix-1];
+    divide_by = radix_to_pow[radix-1];
+  } else {
+    mp_digit test = radix;
+    digits_at_a_time = 0;
+    do {
+      divide_by = test;
+      ++digits_at_a_time;
+      test *= radix;
+    } while( test <= MP_DIGIT_MAX && test > divide_by );
+    pow_of_radix[radix-1] = digits;
+    radix_to_pow[radix-1] = divide_by;
+  }
+
+  /* If that largest power equals radix, use the old version */
+  if( divide_by == radix ) return mp_toradix_naive(a, str, radix);
+
   if ((res = mp_init_copy (&t, a)) != MP_OKAY) {
     return res;
   }
@@ -46,20 +109,34 @@ int mp_toradix (mp_int * a, char *str, int radix)
     t.sign = MP_ZPOS;
   }
 
-  digs = 0;
+  if ((res = mp_div_d (&t, divide_by, &t, &d)) != MP_OKAY) {
+    mp_clear (&t);
+    return res;
+  }
   while (mp_iszero (&t) == 0) {
-    if ((res = mp_div_d (&t, (mp_digit) radix, &t, &d)) != MP_OKAY) {
+    int digits;
+    for( digits = digits_at_a_time; digits > 1; --digits ) {
+      *str++ = mp_s_rmap[ d % radix ];
+      d /= radix;
+    }
+    *str++ = mp_s_rmap[ d ];
+    if ((res = mp_div_d (&t, divide_by, &t, &d)) != MP_OKAY) {
       mp_clear (&t);
       return res;
     }
-    *str++ = mp_s_rmap[d];
-    ++digs;
+  }
+  while( d >= radix ) {
+    *str++ = mp_s_rmap[ d % radix ];
+    d /= radix;
+  }
+  if( d ) {
+    *str++ = mp_s_rmap[ d ];
   }
 
   /* reverse the digits of the string.  In this case _s points
    * to the first digit [exluding the sign] of the number]
    */
-  bn_reverse ((unsigned char *)_s, digs);
+  bn_reverse ((unsigned char *)_s, str - _s);
 
   /* append a NULL so the string is properly terminated */
   *str = '\0';
